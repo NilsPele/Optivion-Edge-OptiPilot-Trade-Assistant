@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>New Trade</title>
+
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+
+<!--
+================================================================================
+ DATA FORMAT TO MT5 (unchanged - 12 fields):
+   TRADE|1|PAIR|DIR|PHASE|LOT|TYPE|ENTRY|SL|TP|INV|BE
+ MQL5: string t[]; int n=StringSplit(data,'|',t);
+       if(n==12 && t[0]=="TRADE" && t[1]=="1"){...}
+================================================================================
+-->
+
+<style>
+:root{
+  --bg:var(--tg-theme-bg-color,#fff);
+  --text:var(--tg-theme-text-color,#111);
+  --hint:var(--tg-theme-hint-color,#888);
+  --accent:var(--tg-theme-button-color,#2ea6ff);
+  --accent-text:var(--tg-theme-button-text-color,#fff);
+  --field:var(--tg-theme-secondary-bg-color,#f2f2f2);
+  --err:#e05656;
+  --warn:#f0a500;
+  --buy:#2e9e5b;
+}
+
+*{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,system-ui,sans-serif}
+
+body{background:var(--bg);color:var(--text);padding:14px 14px 90px}
+
+h2{font-size:17px;margin-bottom:4px}
+.sub{font-size:13px;color:var(--hint);margin-bottom:14px}
+
+#progress{height:4px;border-radius:2px;background:var(--field);margin-bottom:16px;overflow:hidden}
+#bar{height:100%;width:0;background:var(--accent);border-radius:2px;transition:width .25s ease}
+
+label{display:block;font-size:13px;color:var(--hint);margin:12px 0 4px 2px}
+
+input{
+  width:100%;padding:12px;border-radius:10px;
+  border:1px solid transparent;background:var(--field);
+  color:var(--text);font-size:17px;outline:none;
+}
+input.err{border-color:var(--err)}
+
+.seg{display:flex;gap:6px;flex-wrap:wrap}
+.seg button{
+  flex:1;min-width:70px;padding:14px 0;border-radius:10px;border:0;
+  background:var(--field);color:var(--text);font-size:15px;
+}
+.seg button.on{background:var(--accent);color:var(--accent-text);font-weight:600}
+
+.ferr{display:none;color:var(--err);font-size:12px;margin:6px 2px 0;line-height:1.3}
+.ferr.show{display:block}
+
+.rrline{font-size:14px;margin-top:12px;color:var(--hint)}
+.rrline b{font-size:16px}
+
+.step{display:none}
+.step.active{display:block;animation:fade .18s ease}
+@keyframes fade{from{opacity:0;transform:translateX(8px)}to{opacity:1;transform:none}}
+
+#entrybox{display:none;margin-top:12px}
+#entrybox.show{display:block}
+
+/* ---------- OVERVIEW: losse tegels per waarde ---------- */
+.ovr-card{
+  display:grid;gap:6px;
+  margin-bottom:6px;
+}
+.c3{grid-template-columns:repeat(3,1fr)}
+.c4{grid-template-columns:repeat(4,1fr)}
+.cell{
+  background:var(--field);
+  padding:10px 6px;border-radius:10px;
+  cursor:pointer;min-width:0;text-align:center;
+  transition:transform .08s ease;
+}
+.cell:active{transform:scale(.96)}
+.cell .k{display:block;font-size:11px;color:var(--hint);margin-bottom:3px;white-space:nowrap}
+.cell .v{display:block;font-size:14px;font-weight:600;word-break:break-all}
+.ovr-hint{font-size:12px;color:var(--hint);margin-top:10px;text-align:center}
+
+/* full-width RR-balk (berekend, niet tikbaar) */
+.rrbar{
+  display:flex;flex-direction:column;align-items:center;
+  padding:10px 14px;border-radius:10px;margin-bottom:6px;
+  text-align:center;
+}
+.rrbar .k{display:block;font-size:11px;color:var(--hint);margin-bottom:3px;white-space:nowrap}
+.rrbar .v{display:block;font-size:18px;font-weight:700}
+</style>
+</head>
+
+<body>
+
+<div id="progress"><div id="bar"></div></div>
+<h2 id="title">New Trade</h2>
+<div class="sub" id="subtitle"></div>
+
+<!-- STEP 1: PHASE -->
+<div class="step" data-s="1">
+  <label>Phase</label>
+  <div class="seg" id="fase">
+    <button data-v="1">Phase 1</button>
+    <button data-v="2">Phase 2</button>
+    <button data-v="3">Phase 3</button>
+    <button data-v="4">Phase 4</button>
+  </div>
+  <div class="ferr" id="e-fase"></div>
+</div>
+
+<!-- STEP 2: DIRECTION -->
+<div class="step" data-s="2">
+  <label>Direction</label>
+  <div class="seg" id="dir">
+    <button data-v="buy">Buy</button>
+    <button data-v="sell">Sell</button>
+  </div>
+  <div class="ferr" id="e-dir"></div>
+</div>
+
+<!-- STEP 3: PAIR -->
+<div class="step" data-s="3">
+  <label>Pair</label>
+  <input id="pair" type="text" placeholder="EURUSD" autocapitalize="characters" autocomplete="off" spellcheck="false">
+  <div class="ferr" id="e-pair"></div>
+</div>
+
+<!-- STEP 4: ENTRY (Market/Limit als knoppen) -->
+<div class="step" data-s="4">
+  <label>Order Type</label>
+  <div class="seg" id="otype">
+    <button data-v="market">Market</button>
+    <button data-v="limit">Limit</button>
+  </div>
+  <div id="entrybox">
+    <label>Limit Entry Price</label>
+    <input id="entry" type="tel" inputmode="decimal" placeholder="1.08500">
+  </div>
+  <div class="ferr" id="e-entry"></div>
+</div>
+
+<!-- STEP 5: SL -->
+<div class="step" data-s="5">
+  <label>Stop Loss</label>
+  <input id="sl" type="tel" inputmode="decimal" placeholder="1.08000">
+  <div class="ferr" id="e-sl"></div>
+</div>
+
+<!-- STEP 6: TP -->
+<div class="step" data-s="6">
+  <label>Take Profit</label>
+  <input id="tp" type="tel" inputmode="decimal" placeholder="1.09000">
+  <div class="ferr" id="e-tp"></div>
+  <div class="rrline">Risk Reward: <b id="rr">--</b></div>
+</div>
+
+<!-- STEP 7: POSITION SIZE -->
+<div class="step" data-s="7">
+  <label>Position Size</label>
+  <input id="lot" type="tel" inputmode="decimal" placeholder="0.10">
+  <div class="ferr" id="e-lot"></div>
+</div>
+
+<!-- STEP 8: BREAK EVEN -->
+<div class="step" data-s="8">
+  <label>Break Even (RR)</label>
+  <input id="be" type="tel" inputmode="decimal" value="1.0">
+  <div class="ferr" id="e-be"></div>
+</div>
+
+<!-- STEP 9: INVALIDATION -->
+<div class="step" data-s="9">
+  <label>Invalidation (optional)</label>
+  <input id="inv" type="tel" inputmode="decimal" placeholder="leave empty to skip">
+  <div class="ferr" id="e-inv"></div>
+</div>
+
+<!-- STEP 10: OVERVIEW -->
+<div class="step" data-s="10">
+  <div id="ovr"></div>
+  <div class="ovr-hint">Tap any value to edit it</div>
+</div>
+
+<script>
+const tg = window.Telegram.WebApp;
+tg.ready();
+tg.expand();
+if (tg.enableClosingConfirmation) tg.enableClosingConfirmation();
+
+const FORMAT_VERSION = "1";
+const LAST_STEP = 9;
+const OVERVIEW  = 10;
+
+let phase = 0;
+let dir = "";
+let otype = "";          // "market" | "limit"  (vervangt de checkbox)
+let sent = false;
+let cur = 1;
+let returnToOverview = false;
+
+const touched = new Set();
+
+const f   = id => document.getElementById(id);
+const num = id => parseFloat((f(id).value || "").replace(/,/g, "."));
+const PAIR_RE = /^[A-Z0-9._\-]{3,20}$/;
+const isMarket = () => otype === "market";
+
+/* veld -> stap (nieuwe volgorde) */
+const FIELD_STEP  = {fase:1, dir:2, pair:3, entry:4, sl:5, tp:6, lot:7, be:8, inv:9};
+const STEP_FIELDS = {1:["fase"],2:["dir"],3:["pair"],4:["entry"],5:["sl"],6:["tp"],7:["lot"],8:["be"],9:["inv"]};
+const STEP_TITLE  = {
+  1:["Phase","Select the market phase"],
+  2:["Direction","Buy or sell?"],
+  3:["Pair","Which instrument?"],
+  4:["Entry","Market now, or at a limit price?"],
+  5:["Stop Loss","Where do you take the loss?"],
+  6:["Take Profit","Risk Reward updates live"],
+  7:["Position Size","Lot size"],
+  8:["Break Even","BE trigger in R (1 = same distance as SL)"],
+  9:["Invalidation","Pending is deleted if price hits this before fill"],
+ 10:["Overview","Check everything before sending"]
+};
+
+/* ============ SEGMENTS ============ */
+function bindSeg(id, cb, autoAdvance){
+  document.querySelectorAll("#"+id+" button").forEach(b=>{
+    b.onclick = ()=>{
+      document.querySelectorAll("#"+id+" button").forEach(x=>x.classList.remove("on"));
+      b.classList.add("on");
+      cb(b.dataset.v);
+      touched.add(id === "otype" ? "entry" : id);
+      if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+      refresh();
+      if(autoAdvance) setTimeout(next, 140);
+    };
+  });
+}
+bindSeg("fase", v => phase = parseInt(v), true);
+bindSeg("dir",  v => dir = v,             true);
+
+/* Order type: Market = direct door, Limit = prijsveld tonen */
+bindSeg("otype", v=>{
+  otype = v;
+  const box = f("entrybox");
+  if(v === "limit"){
+    box.classList.add("show");
+    setTimeout(()=>f("entry").focus(), 120);
+  } else {
+    box.classList.remove("show");
+    f("entry").value = "";
+  }
+}, false);
+/* na de keuze zelf beslissen of we doorschuiven */
+document.querySelectorAll("#otype button").forEach(b=>{
+  b.addEventListener("click", ()=>{
+    if(b.dataset.v === "market") setTimeout(next, 140);
+  });
+});
+
+/* ============ INVOERBEPERKING ============ */
+/* Numerieke velden: enkel cijfers + maximaal EEN separator (, of .) */
+function sanitizeNum(el){
+  let v = el.value.replace(/[^0-9.,]/g, "");          // alles behalve cijfers , .
+  const firstSep = v.search(/[.,]/);
+  if(firstSep !== -1){                                 // eerste separator behouden,
+    v = v.slice(0, firstSep + 1) +                     // alle volgende verwijderen
+        v.slice(firstSep + 1).replace(/[.,]/g, "");
+  }
+  if(v !== el.value){
+    const p = el.selectionStart;
+    el.value = v;
+    const np = Math.min(Math.max(p - 1, 0), v.length);
+    try{ el.setSelectionRange(np, np); }catch(e){}
+  }
+}
+
+/* Pair: live uppercasen en enkel A-Z 0-9 . _ - toelaten */
+f("pair").addEventListener("input", ()=>{
+  const p = f("pair");
+  const pos = p.selectionStart;
+  const clean = p.value.toUpperCase().replace(/[^A-Z0-9._\-]/g, "");
+  const removed = p.value.length - clean.length;
+  p.value = clean;
+  const np = Math.min(Math.max(pos - removed, 0), clean.length);
+  try{ p.setSelectionRange(np, np); }catch(e){}
+  touched.add("pair");
+  refresh();
+});
+
+/* ============ LIVE FEEDBACK + ENTER = NEXT ============ */
+const NUM_FIELDS = ["entry","sl","tp","inv","lot","be"];
+NUM_FIELDS.forEach(id=>{
+  f(id).addEventListener("input", ()=>{ sanitizeNum(f(id)); touched.add(id); refresh(); });
+  f(id).addEventListener("blur",  ()=>{ touched.add(id); refresh(); });
+  f(id).addEventListener("keydown", ev=>{
+    if(ev.key === "Enter"){ ev.preventDefault(); next(); }
+  });
+});
+f("pair").addEventListener("blur", ()=>{ touched.add("pair"); refresh(); });
+f("pair").addEventListener("keydown", ev=>{
+  if(ev.key === "Enter"){ ev.preventDefault(); next(); }
+});
+
+/* ============ RR ============ */
+function calcRR(){
+  if(isMarket()) return "NA";
+  if(!dir) return null;
+  const e = num("entry"), sl = num("sl"), tp = num("tp");
+  if(!(e>0 && sl>0 && tp>0)) return null;
+  let risk, reward;
+  if(dir==="buy"){ risk = e-sl; reward = tp-e; }
+  else           { risk = sl-e; reward = e-tp; }
+  if(risk<=0 || reward<=0) return null;
+  return reward/risk;
+}
+
+/* ============ VALIDATION ============ */
+function validate(){
+  const errs = {};
+  const market = isMarket();
+  const e = num("entry"), sl = num("sl"), tp = num("tp");
+
+  if(phase < 1) errs["fase"] = "Please select a phase.";
+  if(!dir) errs["dir"] = "Select Buy or Sell.";
+
+  const pair = f("pair").value.trim();
+  if(!pair) errs["pair"] = "Please enter a pair.";
+  else if(!PAIR_RE.test(pair)) errs["pair"] = "Invalid pair format.";
+
+  if(!otype) errs["entry"] = "Choose Market or Limit.";
+  else if(!market && !(e > 0)) errs["entry"] = "Enter a limit price.";
+
+  if(!(sl > 0)) errs["sl"] = "Stop Loss required.";
+  else if(!market && e>0 && dir){
+    if(dir==="buy"  && sl>=e) errs["sl"] = "BUY: SL must be below entry.";
+    if(dir==="sell" && sl<=e) errs["sl"] = "SELL: SL must be above entry.";
+  }
+
+  if(!(tp > 0)) errs["tp"] = "Take Profit required.";
+  else if(!market && e>0 && dir){
+    if(dir==="buy"  && tp<=e) errs["tp"] = "BUY: TP must be above entry.";
+    if(dir==="sell" && tp>=e) errs["tp"] = "SELL: TP must be below entry.";
+  }
+
+  if(!(num("lot") > 0)) errs["lot"] = "Invalid lot size.";
+
+  const beVal = num("be");
+  if(!(beVal > 0)) errs["be"] = "Enter BE trigger.";
+  else {
+    const rrChk = calcRR();
+    if(typeof rrChk === "number" && beVal >= rrChk)
+      errs["be"] = "BE (" + beVal + "R) \u2265 RR (" + rrChk.toFixed(2) + "): break-even would never trigger before TP.";
+  }
+
+  const invRaw = f("inv").value.trim();
+  if(invRaw !== ""){
+    const inv = num("inv");
+    if(!(inv>0)) errs["inv"] = "Invalidation must be a valid price.";
+    else if(!market && e>0 && dir){
+      if(dir==="buy"  && inv<=e) errs["inv"] = "BUY: invalidation above entry.";
+      if(dir==="sell" && inv>=e) errs["inv"] = "SELL: invalidation below entry.";
+    }
+  }
+
+  return errs;
+}
+
+function validateStep(s){
+  const all = validate();
+  const out = {};
+  (STEP_FIELDS[s] || []).forEach(k=>{ if(all[k]) out[k] = all[k]; });
+  return out;
+}
+
+/* ============ NAVIGATION ============ */
+function show(s){
+  cur = s;
+  document.querySelectorAll(".step").forEach(el=>{
+    el.classList.toggle("active", parseInt(el.dataset.s) === s);
+  });
+  f("bar").style.width = Math.round((s / OVERVIEW) * 100) + "%";
+  f("title").textContent = STEP_TITLE[s][0];
+  f("subtitle").textContent = STEP_TITLE[s][1];
+
+  if(tg.BackButton){
+    if(s > 1 && !sent) tg.BackButton.show(); else tg.BackButton.hide();
+  }
+
+  if(s === OVERVIEW) buildOverview();
+
+  const focusId = {3:"pair",5:"sl",6:"tp",7:"lot",8:"be",9:"inv"}[s];
+  if(focusId) setTimeout(()=>f(focusId).focus(), 120);
+  if(s === 4 && otype === "limit") setTimeout(()=>f("entry").focus(), 120);
+
+  refresh();
+}
+
+function next(){
+  if(cur === OVERVIEW) return;
+
+  STEP_FIELDS[cur].forEach(k=>touched.add(k));
+  const stepErrs = validateStep(cur);
+  if(Object.keys(stepErrs).length){
+    refresh();
+    if(tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
+    return;
+  }
+
+  if(cur === LAST_STEP || returnToOverview){
+    const all = validate();
+    const keys = Object.keys(all);
+    if(keys.length){
+      keys.forEach(k=>touched.add(k));
+      show(FIELD_STEP[keys[0]]);
+      if(tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
+      return;
+    }
+    returnToOverview = false;
+    show(OVERVIEW);
+    return;
+  }
+
+  show(cur + 1);
+}
+
+function back(){
+  if(sent) return;
+  returnToOverview = false;
+  if(cur === OVERVIEW){ show(LAST_STEP); return; }
+  if(cur > 1) show(cur - 1);
+}
+if(tg.BackButton) tg.BackButton.onClick(back);
+
+/* ============ OVERVIEW: 3 compacte rijen ============ */
+function cell(label, value, field, color){
+  return "<div class='cell' data-f='" + field + "'>" +
+         "<span class='k'>" + label + "</span>" +
+         "<span class='v'" + (color ? " style='color:" + color + "'" : "") + ">" + value + "</span></div>";
+}
+
+function buildOverview(){
+  const market = isMarket();
+  const rr = calcRR();
+  const rrTxt = (rr === "NA") ? "N/A (market)" : (rr === null ? "--" : rr.toFixed(2));
+  const dirCol = dir === "buy" ? "var(--buy)" : "var(--err)";
+
+  /* tekstkleur + zachte achtergrondtint voor de RR-balk */
+  let rrCol = "var(--hint)", rrBg = "var(--field)";
+  if(typeof rr === "number"){
+    if(rr < 1.5)      { rrCol = "var(--err)";    rrBg = "rgba(224,86,86,.14)"; }
+    else if(rr <= 2)  { rrCol = "var(--warn)";   rrBg = "rgba(240,165,0,.14)"; }
+    else              { rrCol = "var(--accent)"; rrBg = "rgba(46,166,255,.14)"; }
+  }
+
+  let html = "";
+
+  /* Rij 1: Phase | Direction | Pair */
+  html += "<div class='ovr-card c3'>" +
+          cell("Phase", "Phase " + phase, "fase") +
+          cell("Direction", dir.toUpperCase(), "dir", dirCol) +
+          cell("Pair", f("pair").value.trim().toUpperCase(), "pair") +
+          "</div>";
+
+  /* Rij 2: Entry | SL | TP */
+  html += "<div class='ovr-card c3'>" +
+          cell("Entry", market ? "MARKET" : f("entry").value, "entry") +
+          cell("SL", f("sl").value, "sl") +
+          cell("TP", f("tp").value, "tp") +
+          "</div>";
+
+  /* RR-balk: berekend uit rij 2, volle breedte, niet tikbaar */
+  html += "<div class='rrbar' style='background:" + rrBg + "'>" +
+          "<span class='k'>Risk Reward</span>" +
+          "<span class='v' style='color:" + rrCol + "'>" + rrTxt + "</span></div>";
+
+  /* Rij 3: Position size | Break even | Invalidation */
+  html += "<div class='ovr-card c3'>" +
+          cell("Size", f("lot").value, "lot") +
+          cell("BE", f("be").value + "R", "be") +
+          cell("Invalid.", f("inv").value.trim() || "&mdash;", "inv") +
+          "</div>";
+
+  const box = f("ovr");
+  box.innerHTML = html;
+
+  box.querySelectorAll(".cell").forEach(c=>{
+    c.onclick = ()=>{
+      returnToOverview = true;
+      show(FIELD_STEP[c.dataset.f]);
+      if(tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+    };
+  });
+}
+
+/* ============ UI REFRESH ============ */
+function refresh(){
+  const errs = validate();
+
+  ["fase","dir","pair","entry","sl","tp","lot","be","inv"].forEach(id=>{
+    const slot = f("e-"+id);
+    const showErr = touched.has(id) && errs[id];
+    if(slot){
+      slot.textContent = showErr ? errs[id] : "";
+      slot.classList.toggle("show", !!showErr);
+    }
+    const input = f(id);
+    if(input && input.tagName === "INPUT")
+      input.classList.toggle("err", !!showErr);
+  });
+
+  const rr = calcRR();
+  const rrF = f("rr");
+  if(rr === "NA"){ rrF.textContent = "N/A (market)"; rrF.style.color = "var(--hint)"; }
+  else if(rr === null){ rrF.textContent = "--"; rrF.style.color = ""; }
+  else{
+    rrF.textContent = rr.toFixed(2);
+    rrF.style.color = rr < 1.5 ? "var(--err)" : (rr <= 2 ? "var(--warn)" : "var(--accent)");
+  }
+
+  if(sent){ tg.MainButton.hide(); return; }
+
+  if(cur === OVERVIEW){
+    tg.MainButton.setText("Send to MT5");
+    tg.MainButton.show();
+    return;
+  }
+
+  const stepOk = Object.keys(validateStep(cur)).length === 0;
+  if(stepOk){
+    tg.MainButton.setText(cur === LAST_STEP || returnToOverview ? "Review" : "Next");
+    tg.MainButton.show();
+  } else {
+    tg.MainButton.hide();
+  }
+}
+
+/* ============ MAINBUTTON / SEND ============ */
+tg.MainButton.onClick(()=>{
+  if(sent) return;
+
+  if(cur !== OVERVIEW){ next(); return; }
+
+  const errs = validate();
+  const keys = Object.keys(errs);
+  if(keys.length){
+    keys.forEach(k=>touched.add(k));
+    show(FIELD_STEP[keys[0]]);
+    if(tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
+    return;
+  }
+
+  const market = isMarket();
+  const v = id=>{
+    const x = f(id).value.trim().replace(/,/g, ".");
+    return x === "" ? "-" : x;
+  };
+
+  const data = [
+    "TRADE",
+    FORMAT_VERSION,
+    f("pair").value.trim().toUpperCase(),
+    dir.toUpperCase(),
+    String(phase),
+    v("lot"),
+    market ? "MARKET" : "LIMIT",
+    market ? "0" : v("entry"),
+    v("sl"),
+    v("tp"),
+    v("inv"),
+    v("be")
+  ].join("|");
+
+  sent = true;
+  if(tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+  tg.MainButton.hide();
+  if(tg.BackButton) tg.BackButton.hide();
+  tg.sendData(data);
+});
+
+/* ============ INIT ============ */
+show(1);
+</script>
+
+</body>
+</html>
