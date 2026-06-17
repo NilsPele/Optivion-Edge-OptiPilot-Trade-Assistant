@@ -9,10 +9,12 @@
 
 <!--
 ================================================================================
- DATA FORMAT TO MT5 (unchanged - 12 fields):
-   TRADE|1|PAIR|DIR|PHASE|LOT|TYPE|ENTRY|SL|TP|INV|BE
+ DATA FORMAT TO MT5 (break-even verwijderd - nu 11 velden):
+   TRADE|1|PAIR|DIR|PHASE|LOT|TYPE|ENTRY|SL|TP|INV
  MQL5: string t[]; int n=StringSplit(data,'|',t);
-       if(n==12 && t[0]=="TRADE" && t[1]=="1"){...}
+       if(n==11 && t[0]=="TRADE" && t[1]=="1"){...}
+ Break-even is verplaatst naar de EA (per fase instelbaar door de klant).
+ Invalidation blijft per-trade (komt uit dit formulier).
 ================================================================================
 -->
 
@@ -68,13 +70,9 @@ input.err{border-color:var(--err)}
 #entrybox{display:none;margin-top:12px}
 #entrybox.show{display:block}
 
-/* ---------- OVERVIEW: losse tegels per waarde ---------- */
-.ovr-card{
-  display:grid;gap:6px;
-  margin-bottom:6px;
-}
+.ovr-card{display:grid;gap:6px;margin-bottom:6px}
 .c3{grid-template-columns:repeat(3,1fr)}
-.c4{grid-template-columns:repeat(4,1fr)}
+.c2{grid-template-columns:repeat(2,1fr)}
 .cell{
   background:var(--field);
   padding:10px 6px;border-radius:10px;
@@ -86,7 +84,6 @@ input.err{border-color:var(--err)}
 .cell .v{display:block;font-size:14px;font-weight:600;word-break:break-all}
 .ovr-hint{font-size:12px;color:var(--hint);margin-top:10px;text-align:center}
 
-/* full-width RR-balk (berekend, niet tikbaar) */
 .rrbar{
   display:flex;flex-direction:column;align-items:center;
   padding:10px 14px;border-radius:10px;margin-bottom:6px;
@@ -94,6 +91,8 @@ input.err{border-color:var(--err)}
 }
 .rrbar .k{display:block;font-size:11px;color:var(--hint);margin-bottom:3px;white-space:nowrap}
 .rrbar .v{display:block;font-size:18px;font-weight:700}
+/* market = niet van toepassing: zelfde grootte als gewone tegels, wel vet */
+.rrbar .v.na{font-size:14px;font-weight:700}
 </style>
 </head>
 
@@ -168,22 +167,15 @@ input.err{border-color:var(--err)}
   <div class="ferr" id="e-lot"></div>
 </div>
 
-<!-- STEP 8: BREAK EVEN -->
+<!-- STEP 8: INVALIDATION -->
 <div class="step" data-s="8">
-  <label>Break Even (RR)</label>
-  <input id="be" type="tel" inputmode="decimal" value="1.0">
-  <div class="ferr" id="e-be"></div>
-</div>
-
-<!-- STEP 9: INVALIDATION -->
-<div class="step" data-s="9">
   <label>Invalidation (optional)</label>
   <input id="inv" type="tel" inputmode="decimal" placeholder="leave empty to skip">
   <div class="ferr" id="e-inv"></div>
 </div>
 
-<!-- STEP 10: OVERVIEW -->
-<div class="step" data-s="10">
+<!-- STEP 9: OVERVIEW -->
+<div class="step" data-s="9">
   <div id="ovr"></div>
   <div class="ovr-hint">Tap any value to edit it</div>
 </div>
@@ -195,12 +187,12 @@ tg.expand();
 if (tg.enableClosingConfirmation) tg.enableClosingConfirmation();
 
 const FORMAT_VERSION = "1";
-const LAST_STEP = 9;
-const OVERVIEW  = 10;
+const LAST_STEP = 8;
+const OVERVIEW  = 9;
 
 let phase = 0;
 let dir = "";
-let otype = "";          // "market" | "limit"  (vervangt de checkbox)
+let otype = "";          // "market" | "limit"
 let sent = false;
 let cur = 1;
 let returnToOverview = false;
@@ -212,9 +204,9 @@ const num = id => parseFloat((f(id).value || "").replace(/,/g, "."));
 const PAIR_RE = /^[A-Z0-9._\-]{3,20}$/;
 const isMarket = () => otype === "market";
 
-/* veld -> stap (nieuwe volgorde) */
-const FIELD_STEP  = {fase:1, dir:2, pair:3, entry:4, sl:5, tp:6, lot:7, be:8, inv:9};
-const STEP_FIELDS = {1:["fase"],2:["dir"],3:["pair"],4:["entry"],5:["sl"],6:["tp"],7:["lot"],8:["be"],9:["inv"]};
+/* veld -> stap */
+const FIELD_STEP  = {fase:1, dir:2, pair:3, entry:4, sl:5, tp:6, lot:7, inv:8};
+const STEP_FIELDS = {1:["fase"],2:["dir"],3:["pair"],4:["entry"],5:["sl"],6:["tp"],7:["lot"],8:["inv"]};
 const STEP_TITLE  = {
   1:["Phase","Select the market phase"],
   2:["Direction","Buy or sell?"],
@@ -223,9 +215,8 @@ const STEP_TITLE  = {
   5:["Stop Loss","Where do you take the loss?"],
   6:["Take Profit","Risk Reward updates live"],
   7:["Position Size","Lot size"],
-  8:["Break Even","BE trigger in R (1 = same distance as SL)"],
-  9:["Invalidation","Pending is deleted if price hits this before fill"],
- 10:["Overview","Check everything before sending"]
+  8:["Invalidation","Pending is deleted if price hits this before fill"],
+  9:["Overview","Check everything before sending"]
 };
 
 /* ============ SEGMENTS ============ */
@@ -245,7 +236,6 @@ function bindSeg(id, cb, autoAdvance){
 bindSeg("fase", v => phase = parseInt(v), true);
 bindSeg("dir",  v => dir = v,             true);
 
-/* Order type: Market = direct door, Limit = prijsveld tonen */
 bindSeg("otype", v=>{
   otype = v;
   const box = f("entrybox");
@@ -257,7 +247,6 @@ bindSeg("otype", v=>{
     f("entry").value = "";
   }
 }, false);
-/* na de keuze zelf beslissen of we doorschuiven */
 document.querySelectorAll("#otype button").forEach(b=>{
   b.addEventListener("click", ()=>{
     if(b.dataset.v === "market") setTimeout(next, 140);
@@ -265,12 +254,11 @@ document.querySelectorAll("#otype button").forEach(b=>{
 });
 
 /* ============ INVOERBEPERKING ============ */
-/* Numerieke velden: enkel cijfers + maximaal EEN separator (, of .) */
 function sanitizeNum(el){
-  let v = el.value.replace(/[^0-9.,]/g, "");          // alles behalve cijfers , .
+  let v = el.value.replace(/[^0-9.,]/g, "");
   const firstSep = v.search(/[.,]/);
-  if(firstSep !== -1){                                 // eerste separator behouden,
-    v = v.slice(0, firstSep + 1) +                     // alle volgende verwijderen
+  if(firstSep !== -1){
+    v = v.slice(0, firstSep + 1) +
         v.slice(firstSep + 1).replace(/[.,]/g, "");
   }
   if(v !== el.value){
@@ -281,7 +269,6 @@ function sanitizeNum(el){
   }
 }
 
-/* Pair: live uppercasen en enkel A-Z 0-9 . _ - toelaten */
 f("pair").addEventListener("input", ()=>{
   const p = f("pair");
   const pos = p.selectionStart;
@@ -295,7 +282,7 @@ f("pair").addEventListener("input", ()=>{
 });
 
 /* ============ LIVE FEEDBACK + ENTER = NEXT ============ */
-const NUM_FIELDS = ["entry","sl","tp","inv","lot","be"];
+const NUM_FIELDS = ["entry","sl","tp","inv","lot"];
 NUM_FIELDS.forEach(id=>{
   f(id).addEventListener("input", ()=>{ sanitizeNum(f(id)); touched.add(id); refresh(); });
   f(id).addEventListener("blur",  ()=>{ touched.add(id); refresh(); });
@@ -351,14 +338,6 @@ function validate(){
 
   if(!(num("lot") > 0)) errs["lot"] = "Invalid lot size.";
 
-  const beVal = num("be");
-  if(!(beVal > 0)) errs["be"] = "Enter BE trigger.";
-  else {
-    const rrChk = calcRR();
-    if(typeof rrChk === "number" && beVal >= rrChk)
-      errs["be"] = "BE (" + beVal + "R) \u2265 RR (" + rrChk.toFixed(2) + "): break-even would never trigger before TP.";
-  }
-
   const invRaw = f("inv").value.trim();
   if(invRaw !== ""){
     const inv = num("inv");
@@ -395,7 +374,7 @@ function show(s){
 
   if(s === OVERVIEW) buildOverview();
 
-  const focusId = {3:"pair",5:"sl",6:"tp",7:"lot",8:"be",9:"inv"}[s];
+  const focusId = {3:"pair",5:"sl",6:"tp",7:"lot",8:"inv"}[s];
   if(focusId) setTimeout(()=>f(focusId).focus(), 120);
   if(s === 4 && otype === "limit") setTimeout(()=>f("entry").focus(), 120);
 
@@ -438,7 +417,7 @@ function back(){
 }
 if(tg.BackButton) tg.BackButton.onClick(back);
 
-/* ============ OVERVIEW: 3 compacte rijen ============ */
+/* ============ OVERVIEW ============ */
 function cell(label, value, field, color){
   return "<div class='cell' data-f='" + field + "'>" +
          "<span class='k'>" + label + "</span>" +
@@ -448,16 +427,7 @@ function cell(label, value, field, color){
 function buildOverview(){
   const market = isMarket();
   const rr = calcRR();
-  const rrTxt = (rr === "NA") ? "N/A (market)" : (rr === null ? "--" : rr.toFixed(2));
   const dirCol = dir === "buy" ? "var(--buy)" : "var(--err)";
-
-  /* tekstkleur + zachte achtergrondtint voor de RR-balk */
-  let rrCol = "var(--hint)", rrBg = "var(--field)";
-  if(typeof rr === "number"){
-    if(rr < 1.5)      { rrCol = "var(--err)";    rrBg = "rgba(224,86,86,.14)"; }
-    else if(rr <= 2)  { rrCol = "var(--warn)";   rrBg = "rgba(240,165,0,.14)"; }
-    else              { rrCol = "var(--accent)"; rrBg = "rgba(46,166,255,.14)"; }
-  }
 
   let html = "";
 
@@ -475,22 +445,37 @@ function buildOverview(){
           cell("TP", f("tp").value, "tp") +
           "</div>";
 
-  /* RR-balk: berekend uit rij 2, volle breedte, niet tikbaar */
-  html += "<div class='rrbar' style='background:" + rrBg + "'>" +
-          "<span class='k'>Risk Reward</span>" +
-          "<span class='v' style='color:" + rrCol + "'>" + rrTxt + "</span></div>";
-
-  /* Rij 3: Position size | Break even | Invalidation */
-  html += "<div class='ovr-card c3'>" +
+  /* Rij 3: Size | Invalidation (twee gelijke tegels, BOVEN de RR-balk) */
+  html += "<div class='ovr-card c2'>" +
           cell("Size", f("lot").value, "lot") +
-          cell("BE", f("be").value + "R", "be") +
           cell("Invalid.", f("inv").value.trim() || "&mdash;", "inv") +
           "</div>";
+
+  /* RR-balk: ONDER de Size/Invalidation-rij */
+  let rrTxt, rrCol, rrBg, rrNa;
+  if(market){
+    rrTxt = "N/A (market)";
+    rrCol = "var(--hint)";
+    rrBg  = "var(--field)";
+    rrNa  = true;                          // kleiner + vet
+  } else if(rr === null){
+    rrTxt = "--"; rrCol = "var(--hint)"; rrBg = "var(--field)"; rrNa = false;
+  } else {
+    rrTxt = rr.toFixed(2); rrNa = false;
+    if(rr < 1.5)      { rrCol = "var(--err)";    rrBg = "rgba(224,86,86,.14)"; }
+    else if(rr <= 2)  { rrCol = "var(--warn)";   rrBg = "rgba(240,165,0,.14)"; }
+    else              { rrCol = "var(--accent)"; rrBg = "rgba(46,166,255,.14)"; }
+  }
+
+  html += "<div class='rrbar' style='background:" + rrBg + "'>" +
+          "<span class='k'>Risk Reward</span>" +
+          "<span class='v" + (rrNa ? " na" : "") + "' style='color:" + rrCol + "'>" + rrTxt + "</span></div>";
 
   const box = f("ovr");
   box.innerHTML = html;
 
   box.querySelectorAll(".cell").forEach(c=>{
+    if(!c.dataset.f) return;
     c.onclick = ()=>{
       returnToOverview = true;
       show(FIELD_STEP[c.dataset.f]);
@@ -503,7 +488,7 @@ function buildOverview(){
 function refresh(){
   const errs = validate();
 
-  ["fase","dir","pair","entry","sl","tp","lot","be","inv"].forEach(id=>{
+  ["fase","dir","pair","entry","sl","tp","lot","inv"].forEach(id=>{
     const slot = f("e-"+id);
     const showErr = touched.has(id) && errs[id];
     if(slot){
@@ -562,6 +547,7 @@ tg.MainButton.onClick(()=>{
     return x === "" ? "-" : x;
   };
 
+  // 11 velden (BE verwijderd): TRADE|1|PAIR|DIR|PHASE|LOT|TYPE|ENTRY|SL|TP|INV
   const data = [
     "TRADE",
     FORMAT_VERSION,
@@ -573,8 +559,7 @@ tg.MainButton.onClick(()=>{
     market ? "0" : v("entry"),
     v("sl"),
     v("tp"),
-    v("inv"),
-    v("be")
+    v("inv")
   ].join("|");
 
   sent = true;
