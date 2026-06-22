@@ -9,12 +9,12 @@
 
 <!--
 ================================================================================
- DATA FORMAT TO MT5 (break-even verwijderd - nu 11 velden):
-   TRADE|1|PAIR|DIR|PHASE|LOT|TYPE|ENTRY|SL|TP|INV
- MQL5: string t[]; int n=StringSplit(data,'|',t);
-       if(n==11 && t[0]=="TRADE" && t[1]=="1"){...}
- Break-even is verplaatst naar de EA (per fase instelbaar door de klant).
- Invalidation blijft per-trade (komt uit dit formulier).
+ DATA FORMAT TO MT5 (12 velden):
+   TRADE|1|PAIR|DIR|PHASE|LOT|TYPE|ENTRY|SL|DTP|WTP|INV
+ - DTP = Daily Take Profit (verplicht)
+ - WTP = Weekly Take Profit (optioneel, "-" als leeg)
+ - Break-even/trailing zitten per fase in de EA, niet hier.
+ - Invalidation blijft per-trade.
 ================================================================================
 -->
 
@@ -60,8 +60,8 @@ input.err{border-color:var(--err)}
 .ferr{display:none;color:var(--err);font-size:12px;margin:6px 2px 0;line-height:1.3}
 .ferr.show{display:block}
 
-.rrline{font-size:14px;margin-top:12px;color:var(--hint)}
-.rrline b{font-size:16px}
+.rrline{font-size:14px;margin-top:12px;color:var(--hint);display:flex;gap:18px}
+.rrline span b{font-size:16px}
 
 .step{display:none}
 .step.active{display:block;animation:fade .18s ease}
@@ -85,14 +85,15 @@ input.err{border-color:var(--err)}
 .ovr-hint{font-size:12px;color:var(--hint);margin-top:10px;text-align:center}
 
 .rrbar{
-  display:flex;flex-direction:column;align-items:center;
-  padding:10px 14px;border-radius:10px;margin-bottom:6px;
-  text-align:center;
+  display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin-bottom:6px;
 }
-.rrbar .k{display:block;font-size:11px;color:var(--hint);margin-bottom:3px;white-space:nowrap}
-.rrbar .v{display:block;font-size:18px;font-weight:700}
-/* market = niet van toepassing: zelfde grootte als gewone tegels, wel vet */
-.rrbar .v.na{font-size:14px;font-weight:700}
+.rrhalf{
+  display:flex;flex-direction:column;align-items:center;
+  padding:10px 14px;border-radius:10px;text-align:center;
+}
+.rrhalf .k{display:block;font-size:11px;color:var(--hint);margin-bottom:3px;white-space:nowrap}
+.rrhalf .v{display:block;font-size:18px;font-weight:700}
+.rrhalf .v.na{font-size:14px;font-weight:700}
 </style>
 </head>
 
@@ -131,7 +132,7 @@ input.err{border-color:var(--err)}
   <div class="ferr" id="e-pair"></div>
 </div>
 
-<!-- STEP 4: ENTRY (Market/Limit als knoppen) -->
+<!-- STEP 4: ENTRY -->
 <div class="step" data-s="4">
   <label>Order Type</label>
   <div class="seg" id="otype">
@@ -152,12 +153,20 @@ input.err{border-color:var(--err)}
   <div class="ferr" id="e-sl"></div>
 </div>
 
-<!-- STEP 6: TP -->
+<!-- STEP 6: TP (Daily verplicht, Weekly optioneel) -->
 <div class="step" data-s="6">
-  <label>Take Profit</label>
-  <input id="tp" type="tel" inputmode="decimal" placeholder="1.09000">
-  <div class="ferr" id="e-tp"></div>
-  <div class="rrline">Risk Reward: <b id="rr">--</b></div>
+  <label>Daily Take Profit</label>
+  <input id="dtp" type="tel" inputmode="decimal" placeholder="1.09000">
+  <div class="ferr" id="e-dtp"></div>
+
+  <label>Weekly Take Profit (optional)</label>
+  <input id="wtp" type="tel" inputmode="decimal" placeholder="leave empty to skip">
+  <div class="ferr" id="e-wtp"></div>
+
+  <div class="rrline">
+    <span>RR Daily: <b id="rrd">--</b></span>
+    <span>RR Weekly: <b id="rrw">--</b></span>
+  </div>
 </div>
 
 <!-- STEP 7: POSITION SIZE -->
@@ -192,7 +201,7 @@ const OVERVIEW  = 9;
 
 let phase = 0;
 let dir = "";
-let otype = "";          // "market" | "limit"
+let otype = "";
 let sent = false;
 let cur = 1;
 let returnToOverview = false;
@@ -204,16 +213,15 @@ const num = id => parseFloat((f(id).value || "").replace(/,/g, "."));
 const PAIR_RE = /^[A-Z0-9._\-]{3,20}$/;
 const isMarket = () => otype === "market";
 
-/* veld -> stap */
-const FIELD_STEP  = {fase:1, dir:2, pair:3, entry:4, sl:5, tp:6, lot:7, inv:8};
-const STEP_FIELDS = {1:["fase"],2:["dir"],3:["pair"],4:["entry"],5:["sl"],6:["tp"],7:["lot"],8:["inv"]};
+const FIELD_STEP  = {fase:1, dir:2, pair:3, entry:4, sl:5, dtp:6, wtp:6, lot:7, inv:8};
+const STEP_FIELDS = {1:["fase"],2:["dir"],3:["pair"],4:["entry"],5:["sl"],6:["dtp","wtp"],7:["lot"],8:["inv"]};
 const STEP_TITLE  = {
   1:["Phase","Select the market phase"],
   2:["Direction","Buy or sell?"],
   3:["Pair","Which instrument?"],
   4:["Entry","Market now, or at a limit price?"],
   5:["Stop Loss","Where do you take the loss?"],
-  6:["Take Profit","Risk Reward updates live"],
+  6:["Take Profit","Daily required, weekly optional"],
   7:["Position Size","Lot size"],
   8:["Invalidation","Pending is deleted if price hits this before fill"],
   9:["Overview","Check everything before sending"]
@@ -258,8 +266,7 @@ function sanitizeNum(el){
   let v = el.value.replace(/[^0-9.,]/g, "");
   const firstSep = v.search(/[.,]/);
   if(firstSep !== -1){
-    v = v.slice(0, firstSep + 1) +
-        v.slice(firstSep + 1).replace(/[.,]/g, "");
+    v = v.slice(0, firstSep + 1) + v.slice(firstSep + 1).replace(/[.,]/g, "");
   }
   if(v !== el.value){
     const p = el.selectionStart;
@@ -282,7 +289,7 @@ f("pair").addEventListener("input", ()=>{
 });
 
 /* ============ LIVE FEEDBACK + ENTER = NEXT ============ */
-const NUM_FIELDS = ["entry","sl","tp","inv","lot"];
+const NUM_FIELDS = ["entry","sl","dtp","wtp","inv","lot"];
 NUM_FIELDS.forEach(id=>{
   f(id).addEventListener("input", ()=>{ sanitizeNum(f(id)); touched.add(id); refresh(); });
   f(id).addEventListener("blur",  ()=>{ touched.add(id); refresh(); });
@@ -295,11 +302,11 @@ f("pair").addEventListener("keydown", ev=>{
   if(ev.key === "Enter"){ ev.preventDefault(); next(); }
 });
 
-/* ============ RR ============ */
-function calcRR(){
+/* ============ RR (per TP-niveau) ============ */
+function calcRRfor(tpId){
   if(isMarket()) return "NA";
   if(!dir) return null;
-  const e = num("entry"), sl = num("sl"), tp = num("tp");
+  const e = num("entry"), sl = num("sl"), tp = num(tpId);
   if(!(e>0 && sl>0 && tp>0)) return null;
   let risk, reward;
   if(dir==="buy"){ risk = e-sl; reward = tp-e; }
@@ -312,7 +319,7 @@ function calcRR(){
 function validate(){
   const errs = {};
   const market = isMarket();
-  const e = num("entry"), sl = num("sl"), tp = num("tp");
+  const e = num("entry"), sl = num("sl"), dtp = num("dtp");
 
   if(phase < 1) errs["fase"] = "Please select a phase.";
   if(!dir) errs["dir"] = "Select Buy or Sell.";
@@ -330,10 +337,22 @@ function validate(){
     if(dir==="sell" && sl<=e) errs["sl"] = "SELL: SL must be above entry.";
   }
 
-  if(!(tp > 0)) errs["tp"] = "Take Profit required.";
+  // Daily TP verplicht
+  if(!(dtp > 0)) errs["dtp"] = "Daily TP required.";
   else if(!market && e>0 && dir){
-    if(dir==="buy"  && tp<=e) errs["tp"] = "BUY: TP must be above entry.";
-    if(dir==="sell" && tp>=e) errs["tp"] = "SELL: TP must be below entry.";
+    if(dir==="buy"  && dtp<=e) errs["dtp"] = "BUY: Daily TP must be above entry.";
+    if(dir==="sell" && dtp>=e) errs["dtp"] = "SELL: Daily TP must be below entry.";
+  }
+
+  // Weekly TP optioneel — alleen checken als ingevuld
+  const wtpRaw = f("wtp").value.trim();
+  if(wtpRaw !== ""){
+    const wtp = num("wtp");
+    if(!(wtp > 0)) errs["wtp"] = "Weekly TP must be a valid price.";
+    else if(!market && e>0 && dir){
+      if(dir==="buy"  && wtp<=e) errs["wtp"] = "BUY: Weekly TP must be above entry.";
+      if(dir==="sell" && wtp>=e) errs["wtp"] = "SELL: Weekly TP must be below entry.";
+    }
   }
 
   if(!(num("lot") > 0)) errs["lot"] = "Invalid lot size.";
@@ -374,7 +393,7 @@ function show(s){
 
   if(s === OVERVIEW) buildOverview();
 
-  const focusId = {3:"pair",5:"sl",6:"tp",7:"lot",8:"inv"}[s];
+  const focusId = {3:"pair",5:"sl",6:"dtp",7:"lot",8:"inv"}[s];
   if(focusId) setTimeout(()=>f(focusId).focus(), 120);
   if(s === 4 && otype === "limit") setTimeout(()=>f("entry").focus(), 120);
 
@@ -424,10 +443,26 @@ function cell(label, value, field, color){
          "<span class='v'" + (color ? " style='color:" + color + "'" : "") + ">" + value + "</span></div>";
 }
 
+function rrHalf(label, rr){
+  let col = "var(--hint)", bg = "var(--field)", na = false, txt;
+  if(rr === "NA"){ txt = "N/A (market)"; na = true; }
+  else if(rr === null){ txt = "--"; }
+  else {
+    txt = rr.toFixed(2);
+    if(rr < 1.5)      { col = "var(--err)";    bg = "rgba(224,86,86,.14)"; }
+    else if(rr <= 2)  { col = "var(--warn)";   bg = "rgba(240,165,0,.14)"; }
+    else              { col = "var(--accent)"; bg = "rgba(46,166,255,.14)"; }
+  }
+  return "<div class='rrhalf' style='background:" + bg + "'>" +
+         "<span class='k'>" + label + "</span>" +
+         "<span class='v" + (na ? " na" : "") + "' style='color:" + col + "'>" + txt + "</span></div>";
+}
+
 function buildOverview(){
   const market = isMarket();
-  const rr = calcRR();
   const dirCol = dir === "buy" ? "var(--buy)" : "var(--err)";
+  const rrd = calcRRfor("dtp");
+  const rrw = (f("wtp").value.trim() === "") ? null : calcRRfor("wtp");
 
   let html = "";
 
@@ -438,38 +473,26 @@ function buildOverview(){
           cell("Pair", f("pair").value.trim().toUpperCase(), "pair") +
           "</div>";
 
-  /* Rij 2: Entry | SL | TP */
+  /* Rij 2: Entry | SL | Size */
   html += "<div class='ovr-card c3'>" +
           cell("Entry", market ? "MARKET" : f("entry").value, "entry") +
           cell("SL", f("sl").value, "sl") +
-          cell("TP", f("tp").value, "tp") +
-          "</div>";
-
-  /* Rij 3: Size | Invalidation (twee gelijke tegels, BOVEN de RR-balk) */
-  html += "<div class='ovr-card c2'>" +
           cell("Size", f("lot").value, "lot") +
-          cell("Invalid.", f("inv").value.trim() || "&mdash;", "inv") +
           "</div>";
 
-  /* RR-balk: ONDER de Size/Invalidation-rij */
-  let rrTxt, rrCol, rrBg, rrNa;
-  if(market){
-    rrTxt = "N/A (market)";
-    rrCol = "var(--hint)";
-    rrBg  = "var(--field)";
-    rrNa  = true;                          // kleiner + vet
-  } else if(rr === null){
-    rrTxt = "--"; rrCol = "var(--hint)"; rrBg = "var(--field)"; rrNa = false;
-  } else {
-    rrTxt = rr.toFixed(2); rrNa = false;
-    if(rr < 1.5)      { rrCol = "var(--err)";    rrBg = "rgba(224,86,86,.14)"; }
-    else if(rr <= 2)  { rrCol = "var(--warn)";   rrBg = "rgba(240,165,0,.14)"; }
-    else              { rrCol = "var(--accent)"; rrBg = "rgba(46,166,255,.14)"; }
-  }
+  /* Rij 3: Daily TP | Weekly TP */
+  html += "<div class='ovr-card c2'>" +
+          cell("Daily TP", f("dtp").value, "dtp") +
+          cell("Weekly TP", f("wtp").value.trim() || "&mdash;", "wtp") +
+          "</div>";
 
-  html += "<div class='rrbar' style='background:" + rrBg + "'>" +
-          "<span class='k'>Risk Reward</span>" +
-          "<span class='v" + (rrNa ? " na" : "") + "' style='color:" + rrCol + "'>" + rrTxt + "</span></div>";
+  /* Rij 4: RR Daily | RR Weekly */
+  html += "<div class='rrbar'>" + rrHalf("RR Daily", rrd) + rrHalf("RR Weekly", rrw) + "</div>";
+
+  /* Rij 5: Invalidation over de volle breedte */
+  html += "<div class='ovr-card'>" +
+          cell("Invalidation", f("inv").value.trim() || "&mdash;", "inv") +
+          "</div>";
 
   const box = f("ovr");
   box.innerHTML = html;
@@ -488,7 +511,7 @@ function buildOverview(){
 function refresh(){
   const errs = validate();
 
-  ["fase","dir","pair","entry","sl","tp","lot","inv"].forEach(id=>{
+  ["fase","dir","pair","entry","sl","dtp","wtp","lot","inv"].forEach(id=>{
     const slot = f("e-"+id);
     const showErr = touched.has(id) && errs[id];
     if(slot){
@@ -500,14 +523,9 @@ function refresh(){
       input.classList.toggle("err", !!showErr);
   });
 
-  const rr = calcRR();
-  const rrF = f("rr");
-  if(rr === "NA"){ rrF.textContent = "N/A (market)"; rrF.style.color = "var(--hint)"; }
-  else if(rr === null){ rrF.textContent = "--"; rrF.style.color = ""; }
-  else{
-    rrF.textContent = rr.toFixed(2);
-    rrF.style.color = rr < 1.5 ? "var(--err)" : (rr <= 2 ? "var(--warn)" : "var(--accent)");
-  }
+  // beide RR-waarden live tonen
+  setRR("rrd", calcRRfor("dtp"));
+  setRR("rrw", f("wtp").value.trim() === "" ? null : calcRRfor("wtp"));
 
   if(sent){ tg.MainButton.hide(); return; }
 
@@ -523,6 +541,16 @@ function refresh(){
     tg.MainButton.show();
   } else {
     tg.MainButton.hide();
+  }
+}
+
+function setRR(elId, rr){
+  const el = f(elId);
+  if(rr === "NA"){ el.textContent = "N/A"; el.style.color = "var(--hint)"; }
+  else if(rr === null){ el.textContent = "--"; el.style.color = ""; }
+  else{
+    el.textContent = rr.toFixed(2);
+    el.style.color = rr < 1.5 ? "var(--err)" : (rr <= 2 ? "var(--warn)" : "var(--accent)");
   }
 }
 
@@ -547,7 +575,7 @@ tg.MainButton.onClick(()=>{
     return x === "" ? "-" : x;
   };
 
-  // 11 velden (BE verwijderd): TRADE|1|PAIR|DIR|PHASE|LOT|TYPE|ENTRY|SL|TP|INV
+  // 12 velden: TRADE|1|PAIR|DIR|PHASE|LOT|TYPE|ENTRY|SL|DTP|WTP|INV
   const data = [
     "TRADE",
     FORMAT_VERSION,
@@ -558,7 +586,8 @@ tg.MainButton.onClick(()=>{
     market ? "MARKET" : "LIMIT",
     market ? "0" : v("entry"),
     v("sl"),
-    v("tp"),
+    v("dtp"),
+    v("wtp"),
     v("inv")
   ].join("|");
 
